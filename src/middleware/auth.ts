@@ -38,6 +38,11 @@ declare global {
           key: string;
         };
       };
+      cycle?: {
+        id: string;
+        projectId: string;
+        name: string;
+      };
     }
   }
 }

@@ -12,6 +12,13 @@ const envSchema = z.object({
   CORS_ORIGIN: z
     .string()
     .default("http://localhost:5173,http://localhost:5174,http://localhost:5175"),
+  FRONTEND_URL: z.string().default("http://localhost:5174"),
+  GITHUB_CLIENT_ID: z.string().optional().default(""),
+  GITHUB_CLIENT_SECRET: z.string().optional().default(""),
+  GITHUB_CALLBACK_URL: z
+    .string()
+    .default("http://localhost:4000/api/integrations/github/callback"),
+  GITHUB_WEBHOOK_SECRET: z.string().optional().default(""),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -26,4 +33,5 @@ export const env = {
   corsOrigins: parsed.data.CORS_ORIGIN.split(",")
     .map((origin) => origin.trim())
     .filter(Boolean),
+  githubConfigured: Boolean(parsed.data.GITHUB_CLIENT_ID && parsed.data.GITHUB_CLIENT_SECRET),
 };

@@ -25,6 +25,7 @@ const createIssueSchema = z.object({
   status: statusEnum.optional(),
   priority: priorityEnum.optional(),
   assigneeId: z.string().nullable().optional(),
+  cycleId: z.string().nullable().optional(),
   labelIds: z.array(z.string()).optional(),
 });
 
@@ -38,12 +39,14 @@ function serializeIssue(issue: {
   status: string;
   priority: string;
   projectId: string;
+  cycleId?: string | null;
   createdAt: Date;
   updatedAt: Date;
   reporter: { id: string; name: string; email: string };
   assignee: { id: string; name: string; email: string } | null;
   labels?: { label: { id: string; name: string; color: string } }[];
   project?: { id: string; name: string; key: string; workspaceId: string };
+  cycle?: { id: string; name: string; status: string } | null;
   _count?: { comments: number };
 }) {
   return {
@@ -54,6 +57,8 @@ function serializeIssue(issue: {
     status: issue.status,
     priority: issue.priority,
     projectId: issue.projectId,
+    cycleId: issue.cycleId ?? null,
+    cycle: issue.cycle ?? null,
     project: issue.project,
     reporter: issue.reporter,
     assignee: issue.assignee,
@@ -81,6 +86,15 @@ async function assertAssigneeInWorkspace(assigneeId: string | null | undefined, 
   if (!member) throw new ForbiddenError("Assignee must be a workspace member");
 }
 
+async function assertCycleInProject(cycleId: string | null | undefined, projectId: string) {
+  if (!cycleId) return;
+  const cycle = await prisma.cycle.findFirst({
+    where: { id: cycleId, projectId },
+    select: { id: true },
+  });
+  if (!cycle) throw new ForbiddenError("Cycle must belong to the same project");
+}
+
 async function assertLabelsInWorkspace(labelIds: string[] | undefined, workspaceId: string) {
   if (!labelIds?.length) return;
   const count = await prisma.label.count({
@@ -106,6 +120,7 @@ issueRouter.get(
           labels: { include: { label: true } },
           _count: { select: { comments: true } },
           project: { select: { id: true, name: true, key: true, workspaceId: true } },
+          cycle: { select: { id: true, name: true, status: true } },
         },
         orderBy: [{ status: "asc" }, { updatedAt: "desc" }],
       });
@@ -126,6 +141,7 @@ issueRouter.post(
 
       await assertAssigneeInWorkspace(body.assigneeId, workspaceId);
       await assertLabelsInWorkspace(body.labelIds, workspaceId);
+      await assertCycleInProject(body.cycleId, req.params.projectId!);
 
       const number = await nextIssueNumber(req.params.projectId!);
 
@@ -139,6 +155,7 @@ issueRouter.post(
           priority: body.priority ?? "NONE",
           reporterId: req.user!.id,
           assigneeId: body.assigneeId ?? null,
+          cycleId: body.cycleId ?? null,
           labels: body.labelIds?.length
             ? { create: body.labelIds.map((labelId) => ({ labelId })) }
             : undefined,
@@ -149,6 +166,7 @@ issueRouter.post(
           labels: { include: { label: true } },
           _count: { select: { comments: true } },
           project: { select: { id: true, name: true, key: true, workspaceId: true } },
+          cycle: { select: { id: true, name: true, status: true } },
         },
       });
 
@@ -178,6 +196,7 @@ issueRouter.get("/issues/:issueId", requireIssueAccess("GUEST"), async (req, res
         labels: { include: { label: true } },
         _count: { select: { comments: true } },
         project: { select: { id: true, name: true, key: true, workspaceId: true } },
+        cycle: { select: { id: true, name: true, status: true } },
       },
     });
     if (!issue) throw new NotFoundError("Issue not found");
@@ -196,6 +215,7 @@ issueRouter.patch("/issues/:issueId", requireIssueAccess("MEMBER"), async (req, 
         status: statusEnum.optional(),
         priority: priorityEnum.optional(),
         assigneeId: z.string().nullable().optional(),
+        cycleId: z.string().nullable().optional(),
         labelIds: z.array(z.string()).optional(),
       })
       .parse(req.body);
@@ -203,6 +223,7 @@ issueRouter.patch("/issues/:issueId", requireIssueAccess("MEMBER"), async (req, 
     const workspaceId = req.issue!.project.workspaceId;
     await assertAssigneeInWorkspace(body.assigneeId, workspaceId);
     await assertLabelsInWorkspace(body.labelIds, workspaceId);
+    await assertCycleInProject(body.cycleId, req.issue!.projectId);
 
     const issue = await prisma.$transaction(async (tx) => {
       if (body.labelIds) {
@@ -225,6 +246,7 @@ issueRouter.patch("/issues/:issueId", requireIssueAccess("MEMBER"), async (req, 
           status: body.status,
           priority: body.priority,
           assigneeId: body.assigneeId === undefined ? undefined : body.assigneeId,
+          cycleId: body.cycleId === undefined ? undefined : body.cycleId,
         },
         include: {
           reporter: { select: userSelect },
@@ -232,6 +254,7 @@ issueRouter.patch("/issues/:issueId", requireIssueAccess("MEMBER"), async (req, 
           labels: { include: { label: true } },
           _count: { select: { comments: true } },
           project: { select: { id: true, name: true, key: true, workspaceId: true } },
+          cycle: { select: { id: true, name: true, status: true } },
         },
       });
     });
@@ -360,6 +383,7 @@ issueRouter.get(
           labels: { include: { label: true } },
           _count: { select: { comments: true } },
           project: { select: { id: true, name: true, key: true, workspaceId: true } },
+          cycle: { select: { id: true, name: true, status: true } },
         },
         orderBy: { updatedAt: "desc" },
         take: 100,

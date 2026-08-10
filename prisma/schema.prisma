@@ -32,6 +32,12 @@ enum IssuePriority {
   URGENT
 }
 
+enum CycleStatus {
+  PLANNED
+  ACTIVE
+  COMPLETED
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -45,9 +51,11 @@ model User {
   createdWorkspaces Workspace[]       @relation("WorkspaceCreator")
   auditLogs         AuditLog[]
   createdProjects   Project[]         @relation("ProjectCreator")
+  createdCycles     Cycle[]           @relation("CycleCreator")
   reportedIssues    Issue[]           @relation("IssueReporter")
   assignedIssues    Issue[]           @relation("IssueAssignee")
   issueComments     IssueComment[]
+  githubConnections GithubConnection[]
 
   @@map("users")
 }
@@ -65,6 +73,8 @@ model Workspace {
   auditLogs AuditLog[]
   projects  Project[]
   labels    Label[]
+  githubConnections GithubConnection[]
+  repositories Repository[]
 
   @@map("workspaces")
 }
@@ -97,15 +107,37 @@ model Project {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   createdBy User      @relation("ProjectCreator", fields: [createdById], references: [id])
   issues    Issue[]
+  cycles    Cycle[]
 
   @@unique([workspaceId, key])
   @@index([workspaceId])
   @@map("projects")
 }
 
+model Cycle {
+  id          String      @id @default(cuid())
+  projectId   String      @map("project_id")
+  name        String
+  goal        String?     @db.Text
+  status      CycleStatus @default(PLANNED)
+  startDate   DateTime?   @map("start_date")
+  endDate     DateTime?   @map("end_date")
+  createdById String      @map("created_by_id")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy User    @relation("CycleCreator", fields: [createdById], references: [id])
+  issues    Issue[]
+
+  @@index([projectId, status])
+  @@map("cycles")
+}
+
 model Issue {
   id          String        @id @default(cuid())
   projectId   String        @map("project_id")
+  cycleId     String?       @map("cycle_id")
   number      Int
   title       String
   description String?       @db.Text
@@ -117,13 +149,16 @@ model Issue {
   updatedAt   DateTime      @updatedAt @map("updated_at")
 
   project   Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  cycle     Cycle?         @relation(fields: [cycleId], references: [id], onDelete: SetNull)
   reporter  User           @relation("IssueReporter", fields: [reporterId], references: [id])
   assignee  User?          @relation("IssueAssignee", fields: [assigneeId], references: [id])
   comments  IssueComment[]
   labels    IssueLabel[]
+  pullRequests PullRequest[]
 
   @@unique([projectId, number])
   @@index([projectId, status])
+  @@index([cycleId])
   @@index([assigneeId])
   @@map("issues")
 }
@@ -168,6 +203,94 @@ model IssueLabel {
 
   @@id([issueId, labelId])
   @@map("issue_labels")
+}
+
+enum RepoSyncStatus {
+  IDLE
+  SYNCING
+  SYNCED
+  ERROR
+}
+
+enum PullRequestState {
+  OPEN
+  CLOSED
+  MERGED
+}
+
+model GithubConnection {
+  id             String   @id @default(cuid())
+  workspaceId    String   @map("workspace_id")
+  userId         String   @map("user_id")
+  githubUserId   String   @map("github_user_id")
+  githubLogin    String   @map("github_login")
+  accessTokenEnc String   @map("access_token_enc") @db.Text
+  scope          String?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repositories Repository[]
+
+  @@unique([workspaceId])
+  @@index([userId])
+  @@map("github_connections")
+}
+
+model Repository {
+  id             String        @id @default(cuid())
+  workspaceId    String        @map("workspace_id")
+  connectionId   String        @map("connection_id")
+  githubRepoId   String        @map("github_repo_id")
+  fullName       String        @map("full_name")
+  name           String
+  owner          String
+  description    String?       @db.Text
+  private        Boolean       @default(false)
+  defaultBranch  String?       @map("default_branch")
+  htmlUrl        String        @map("html_url")
+  syncStatus     RepoSyncStatus @default(IDLE) @map("sync_status")
+  lastSyncedAt   DateTime?     @map("last_synced_at")
+  lastSyncError  String?       @map("last_sync_error") @db.Text
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  workspace    Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  connection   GithubConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  pullRequests PullRequest[]
+
+  @@unique([workspaceId, githubRepoId])
+  @@index([workspaceId])
+  @@index([fullName])
+  @@map("repositories")
+}
+
+model PullRequest {
+  id           String           @id @default(cuid())
+  repositoryId String           @map("repository_id")
+  issueId      String?          @map("issue_id")
+  githubPrId   String           @map("github_pr_id")
+  number       Int
+  title        String
+  body         String?          @db.Text
+  state        PullRequestState @default(OPEN)
+  draft        Boolean          @default(false)
+  authorLogin  String           @map("author_login")
+  htmlUrl      String           @map("html_url")
+  githubCreatedAt DateTime?     @map("github_created_at")
+  githubUpdatedAt DateTime?     @map("github_updated_at")
+  mergedAt     DateTime?        @map("merged_at")
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  issue      Issue?     @relation(fields: [issueId], references: [id], onDelete: SetNull)
+
+  @@unique([repositoryId, githubPrId])
+  @@index([repositoryId, state])
+  @@index([issueId])
+  @@map("pull_requests")
 }
 
 model RefreshToken {
