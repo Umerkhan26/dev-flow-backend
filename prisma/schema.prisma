@@ -56,6 +56,7 @@ model User {
   assignedIssues    Issue[]           @relation("IssueAssignee")
   issueComments     IssueComment[]
   githubConnections GithubConnection[]
+  aiInteractions    AiInteraction[]
 
   @@map("users")
 }
@@ -75,6 +76,7 @@ model Workspace {
   labels    Label[]
   githubConnections GithubConnection[]
   repositories Repository[]
+  aiInteractions AiInteraction[]
 
   @@map("workspaces")
 }
@@ -320,4 +322,36 @@ model AuditLog {
 
   @@index([workspaceId])
   @@map("audit_logs")
+}
+
+enum AiKind {
+  SUMMARY_ISSUE
+  SUMMARY_PR
+  SUMMARY_CYCLE
+  ASK
+}
+
+enum AiProvider {
+  HEURISTIC
+  LLM
+}
+
+model AiInteraction {
+  id          String     @id @default(cuid())
+  workspaceId String     @map("workspace_id")
+  userId      String     @map("user_id")
+  kind        AiKind
+  targetType  String?    @map("target_type")
+  targetId    String?    @map("target_id")
+  prompt      String?    @db.Text
+  response    String     @db.Text
+  provider    AiProvider
+  createdAt   DateTime   @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([userId])
+  @@map("ai_interactions")
 }

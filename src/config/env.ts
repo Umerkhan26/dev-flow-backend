@@ -19,6 +19,9 @@ const envSchema = z.object({
     .string()
     .default("http://localhost:4000/api/integrations/github/callback"),
   GITHUB_WEBHOOK_SECRET: z.string().optional().default(""),
+  LLM_BASE_URL: z.string().optional().default(""),
+  LLM_API_KEY: z.string().optional().default(""),
+  LLM_MODEL: z.string().optional().default("llama3.2"),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -34,4 +37,5 @@ export const env = {
     .map((origin) => origin.trim())
     .filter(Boolean),
   githubConfigured: Boolean(parsed.data.GITHUB_CLIENT_ID && parsed.data.GITHUB_CLIENT_SECRET),
+  llmConfigured: Boolean(parsed.data.LLM_BASE_URL),
 };
