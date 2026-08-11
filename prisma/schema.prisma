@@ -57,6 +57,8 @@ model User {
   issueComments     IssueComment[]
   githubConnections GithubConnection[]
   aiInteractions    AiInteraction[]
+  notifications     Notification[]        @relation("NotificationRecipient")
+  actedNotifications Notification[]       @relation("NotificationActor")
 
   @@map("users")
 }
@@ -77,6 +79,7 @@ model Workspace {
   githubConnections GithubConnection[]
   repositories Repository[]
   aiInteractions AiInteraction[]
+  notifications Notification[]
 
   @@map("workspaces")
 }
@@ -354,4 +357,35 @@ model AiInteraction {
   @@index([workspaceId, createdAt])
   @@index([userId])
   @@map("ai_interactions")
+}
+
+enum NotificationType {
+  ISSUE_CREATED
+  ISSUE_UPDATED
+  PR_LINKED
+  CYCLE_CREATED
+  CYCLE_UPDATED
+  REPO_SYNCED
+  SYSTEM
+}
+
+model Notification {
+  id          String           @id @default(cuid())
+  workspaceId String           @map("workspace_id")
+  userId      String           @map("user_id")
+  actorId     String?          @map("actor_id")
+  type        NotificationType
+  title       String
+  body        String?          @db.Text
+  link        String?
+  readAt      DateTime?        @map("read_at")
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  actor     User?     @relation("NotificationActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, userId, createdAt])
+  @@index([userId, readAt])
+  @@map("notifications")
 }

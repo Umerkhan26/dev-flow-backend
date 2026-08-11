@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../database/prisma.js";
 import { requireAuth, requireWorkspaceMember } from "../../middleware/auth.js";
 import { requireIssueAccess, requireProjectAccess } from "../../middleware/resourceAccess.js";
+import { notifyWorkspaceMembers } from "../../realtime/socket.js";
 import { ForbiddenError, NotFoundError } from "../../utils/errors.js";
 
 export const issueRouter = Router();
@@ -179,6 +180,16 @@ issueRouter.post(
         },
       });
 
+      void notifyWorkspaceMembers({
+        workspaceId,
+        actorId: req.user!.id,
+        excludeUserId: req.user!.id,
+        type: "ISSUE_CREATED",
+        title: `New issue ${issue.project.key}-${issue.number}`,
+        body: issue.title,
+        link: `/app/issues/${issue.id}`,
+      });
+
       res.status(201).json({ issue: serializeIssue(issue) });
     } catch (error) {
       next(error);
@@ -258,6 +269,19 @@ issueRouter.patch("/issues/:issueId", requireIssueAccess("MEMBER"), async (req, 
         },
       });
     });
+
+    if (body.status || body.title || body.priority || body.assigneeId !== undefined) {
+      const key = `${issue.project.key}-${issue.number}`;
+      void notifyWorkspaceMembers({
+        workspaceId,
+        actorId: req.user!.id,
+        excludeUserId: req.user!.id,
+        type: "ISSUE_UPDATED",
+        title: body.status ? `${key} moved to ${body.status.replaceAll("_", " ")}` : `${key} updated`,
+        body: issue.title,
+        link: `/app/issues/${issue.id}`,
+      });
+    }
 
     res.json({ issue: serializeIssue(issue) });
   } catch (error) {

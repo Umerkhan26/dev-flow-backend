@@ -1,5 +1,6 @@
 import { prisma } from "../../database/prisma.js";
 import { decryptSecret } from "../../utils/crypto.js";
+import { notifyWorkspaceMembers } from "../../realtime/socket.js";
 import { listGithubPullRequests, type GithubPull } from "./github.client.js";
 
 function mapPrState(pr: GithubPull) {
@@ -66,6 +67,14 @@ export async function syncRepositoryPullRequests(repositoryId: string) {
         lastSyncedAt: new Date(),
         lastSyncError: null,
       },
+    });
+
+    void notifyWorkspaceMembers({
+      workspaceId: repository.workspaceId,
+      type: "REPO_SYNCED",
+      title: `Synced ${repository.fullName}`,
+      body: `${pulls.length} pull request(s) imported`,
+      link: "/app/pull-requests",
     });
 
     return { synced: pulls.length };

@@ -14,6 +14,7 @@ import {
   listGithubRepos,
 } from "../../integrations/github/github.client.js";
 import { queueRepositorySync, syncRepositoryPullRequests } from "../../integrations/github/github.sync.js";
+import { notifyWorkspaceMembers } from "../../realtime/socket.js";
 
 export const githubRouter = Router();
 
@@ -434,10 +435,31 @@ githubRouter.patch("/pull-requests/:pullRequestId", requireAuth, async (req, res
       where: { id: pr.id },
       data: { issueId: body.issueId },
       include: {
-        repository: { select: { id: true, fullName: true, htmlUrl: true } },
-        issue: { select: { id: true, number: true, title: true, projectId: true } },
+        repository: { select: { id: true, fullName: true, htmlUrl: true, workspaceId: true } },
+        issue: {
+          select: {
+            id: true,
+            number: true,
+            title: true,
+            projectId: true,
+            project: { select: { key: true } },
+          },
+        },
       },
     });
+
+    if (body.issueId && updated.issue) {
+      void notifyWorkspaceMembers({
+        workspaceId: pr.repository.workspaceId,
+        actorId: req.user!.id,
+        excludeUserId: req.user!.id,
+        type: "PR_LINKED",
+        title: `PR #${updated.number} linked to ${updated.issue.project.key}-${updated.issue.number}`,
+        body: updated.title,
+        link: `/app/pull-requests/${updated.id}`,
+      });
+    }
+
     res.json({ pullRequest: updated });
   } catch (error) {
     next(error);

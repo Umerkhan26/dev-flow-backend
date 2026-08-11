@@ -9,6 +9,7 @@ import { authRouter } from "./modules/auth/auth.routes.js";
 import { cycleRouter } from "./modules/cycles/cycle.routes.js";
 import { githubRouter } from "./modules/github/github.routes.js";
 import { issueRouter } from "./modules/issues/issue.routes.js";
+import { notificationRouter } from "./modules/notifications/notification.routes.js";
 import { projectRouter } from "./modules/projects/project.routes.js";
 import { workspaceRouter } from "./modules/workspaces/workspace.routes.js";
 
@@ -41,6 +42,7 @@ export function createApp() {
   // GitHub before project/issue/cycle: those routers apply requireAuth to all /api/*
   // and would block OAuth start/callback/webhook (no Bearer header).
   app.use("/api", githubRouter);
+  app.use("/api", notificationRouter);
   app.use("/api", aiRouter);
   app.use("/api", projectRouter);
   app.use("/api", issueRouter);

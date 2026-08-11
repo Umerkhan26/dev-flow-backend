@@ -4,6 +4,7 @@ import { prisma } from "../../database/prisma.js";
 import { requireAuth, requireWorkspaceMember } from "../../middleware/auth.js";
 import { requireCycleAccess } from "../../middleware/cycleAccess.js";
 import { requireProjectAccess } from "../../middleware/resourceAccess.js";
+import { notifyWorkspaceMembers } from "../../realtime/socket.js";
 import { NotFoundError } from "../../utils/errors.js";
 
 export const cycleRouter = Router();
@@ -103,6 +104,16 @@ cycleRouter.post(
           action: "cycle.created",
           metadata: { cycleId: cycle.id, name: cycle.name },
         },
+      });
+
+      void notifyWorkspaceMembers({
+        workspaceId: cycle.project.workspaceId,
+        actorId: req.user!.id,
+        excludeUserId: req.user!.id,
+        type: "CYCLE_CREATED",
+        title: `Cycle created: ${cycle.name}`,
+        body: cycle.goal || `${cycle.project.key} delivery cycle`,
+        link: `/app/cycles/${cycle.id}`,
       });
 
       res.status(201).json({ cycle: serializeCycle(cycle) });
@@ -232,6 +243,20 @@ cycleRouter.post("/cycles/:cycleId/issues", requireCycleAccess("MEMBER"), async 
       },
       data: { cycleId: req.cycle!.id },
     });
+
+    const workspaceId = req.project?.workspaceId ?? req.workspaceMembership?.workspaceId;
+    if (workspaceId && result.count > 0) {
+      void notifyWorkspaceMembers({
+        workspaceId,
+        actorId: req.user!.id,
+        excludeUserId: req.user!.id,
+        type: "CYCLE_UPDATED",
+        title: `${result.count} issue(s) added to ${req.cycle!.name}`,
+        body: "Cycle board updated",
+        link: `/app/cycles/${req.cycle!.id}`,
+      });
+    }
+
     res.json({ updated: result.count });
   } catch (error) {
     next(error);

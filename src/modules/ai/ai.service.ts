@@ -16,6 +16,7 @@ import {
 
 const SYSTEM = `You are DevFlow AI, an engineering assistant inside a project management product.
 Use ONLY the provided workspace context. Do not invent commits, files, or people.
+Always reply in clear, professional English (never Hindi, Urdu, or other languages unless the user explicitly asks).
 Be concise, use markdown, and focus on actionable engineering insight.`;
 
 async function assertWorkspaceMember(workspaceId: string, userId: string) {
@@ -49,19 +50,42 @@ async function generate(promptUser: string, fallback: string) {
       { role: "user", content: promptUser },
     ]);
     return { text, provider: "LLM" as const };
-  } catch {
-    return { text: `${fallback}\n\n_(LLM unavailable — showed heuristic summary.)_`, provider: "HEURISTIC" as const };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "unknown error";
+    console.error("LLM failed, using heuristic:", detail);
+    return {
+      text: `${fallback}\n\n_(Real AI unavailable right now — showed built-in summary. Check GEMINI_API_KEY.)_`,
+      provider: "HEURISTIC" as const,
+    };
   }
 }
 
 export async function getAiStatus() {
+  if (env.llmProvider === "gemini") {
+    return {
+      llmConfigured: true,
+      model: env.GEMINI_MODEL,
+      mode: "llm",
+      provider: "gemini",
+      message: `Using Google Gemini (${env.GEMINI_MODEL}) — real AI with workspace-only context`,
+    };
+  }
+  if (env.llmProvider === "openai_compatible") {
+    return {
+      llmConfigured: true,
+      model: env.LLM_MODEL,
+      mode: "llm",
+      provider: "openai_compatible",
+      message: `Using ${env.LLM_MODEL} via ${env.LLM_BASE_URL}`,
+    };
+  }
   return {
-    llmConfigured: env.llmConfigured,
-    model: env.llmConfigured ? env.LLM_MODEL : null,
-    mode: env.llmConfigured ? "llm" : "heuristic",
-    message: env.llmConfigured
-      ? `Using ${env.LLM_MODEL} via ${env.LLM_BASE_URL}`
-      : "Using built-in heuristic summaries (set LLM_BASE_URL for Ollama/OpenAI-compatible models)",
+    llmConfigured: false,
+    model: null,
+    mode: "heuristic",
+    provider: "heuristic",
+    message:
+      "Using built-in heuristic summaries (set GEMINI_API_KEY for free Gemini, or LLM_BASE_URL for Ollama)",
   };
 }
 
@@ -146,7 +170,7 @@ export async function summarizePullRequest(pullRequestId: string, userId: string
   };
 
   const fallback = heuristicPrSummary(ctx);
-  const prompt = `Explain what this pull request changes and what a reviewer should check. Answer like: "yeh PR kya change karti hai?"\n\nCONTEXT:\n${JSON.stringify(ctx, null, 2)}`;
+  const prompt = `Explain in English what this pull request appears to change and what a reviewer should check. Keep it short and practical.\n\nCONTEXT:\n${JSON.stringify(ctx, null, 2)}`;
   const { text, provider } = await generate(prompt, fallback);
 
   const saved = await persist({
@@ -348,7 +372,7 @@ export async function askWorkspaceQuestion(
   };
 
   const fallback = heuristicAsk(question, askCtx);
-  const prompt = `Answer the engineering question using only this workspace context.\n\nQUESTION:\n${question}\n\nWORKSPACE:\n${JSON.stringify(askCtx, null, 2)}${
+  const prompt = `Answer the engineering question in English using only this workspace context.\n\nQUESTION:\n${question}\n\nWORKSPACE:\n${JSON.stringify(askCtx, null, 2)}${
     focused ? `\n\nFOCUSED_CONTEXT:\n${focused}` : ""
   }`;
   const { text, provider } = await generate(prompt, fallback);

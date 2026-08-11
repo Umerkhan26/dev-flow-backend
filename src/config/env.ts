@@ -22,6 +22,8 @@ const envSchema = z.object({
   LLM_BASE_URL: z.string().optional().default(""),
   LLM_API_KEY: z.string().optional().default(""),
   LLM_MODEL: z.string().optional().default("llama3.2"),
+  GEMINI_API_KEY: z.string().optional().default(""),
+  GEMINI_MODEL: z.string().optional().default("gemini-2.5-flash-lite"),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -37,5 +39,11 @@ export const env = {
     .map((origin) => origin.trim())
     .filter(Boolean),
   githubConfigured: Boolean(parsed.data.GITHUB_CLIENT_ID && parsed.data.GITHUB_CLIENT_SECRET),
-  llmConfigured: Boolean(parsed.data.LLM_BASE_URL),
+  /** Real LLM available via Gemini key and/or OpenAI-compatible base URL */
+  llmConfigured: Boolean(parsed.data.GEMINI_API_KEY || parsed.data.LLM_BASE_URL),
+  llmProvider: parsed.data.GEMINI_API_KEY
+    ? ("gemini" as const)
+    : parsed.data.LLM_BASE_URL
+      ? ("openai_compatible" as const)
+      : ("none" as const),
 };
