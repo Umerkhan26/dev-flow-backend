@@ -7,8 +7,8 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   JWT_ACCESS_SECRET: z.string().min(16),
   JWT_REFRESH_SECRET: z.string().min(16),
-  JWT_ACCESS_EXPIRES: z.string().default("15m"),
-  JWT_REFRESH_EXPIRES: z.string().default("7d"),
+  JWT_ACCESS_EXPIRES: z.string().default("12h"),
+  JWT_REFRESH_EXPIRES: z.string().default("30d"),
   CORS_ORIGIN: z
     .string()
     .default("http://localhost:5173,http://localhost:5174,http://localhost:5175"),

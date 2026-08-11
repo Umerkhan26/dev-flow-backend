@@ -5,6 +5,7 @@ import morgan from "morgan";
 import { env } from "./config/env.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { aiRouter } from "./modules/ai/ai.routes.js";
+import { analyticsRouter } from "./modules/analytics/analytics.routes.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
 import { cycleRouter } from "./modules/cycles/cycle.routes.js";
 import { githubRouter } from "./modules/github/github.routes.js";
@@ -43,6 +44,7 @@ export function createApp() {
   // and would block OAuth start/callback/webhook (no Bearer header).
   app.use("/api", githubRouter);
   app.use("/api", notificationRouter);
+  app.use("/api", analyticsRouter);
   app.use("/api", aiRouter);
   app.use("/api", projectRouter);
   app.use("/api", issueRouter);
