@@ -5,7 +5,7 @@ import { prisma } from "../../database/prisma.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { writeAuditLog } from "../../utils/audit.js";
 import { sendPasswordResetOtpEmail } from "../../utils/mail.js";
-import { AppError, ConflictError, UnauthorizedError } from "../../utils/errors.js";
+import { ConflictError, UnauthorizedError } from "../../utils/errors.js";
 import {
   findValidPasswordReset,
   hashPassword,
