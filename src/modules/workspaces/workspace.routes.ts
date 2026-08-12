@@ -2,16 +2,28 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../database/prisma.js";
 import { requireAuth, requireWorkspaceMember } from "../../middleware/auth.js";
-import { ConflictError, NotFoundError } from "../../utils/errors.js";
+import { AppError, ConflictError, ForbiddenError, NotFoundError } from "../../utils/errors.js";
+import { writeAuditLog } from "../../utils/audit.js";
 import { slugify } from "../auth/auth.service.js";
 
 export const workspaceRouter = Router();
 
 workspaceRouter.use(requireAuth);
 
+const roleEnum = z.enum(["OWNER", "ADMIN", "MANAGER", "MEMBER", "GUEST"]);
+const assignableRoles = z.enum(["ADMIN", "MANAGER", "MEMBER", "GUEST"]);
+
 const createWorkspaceSchema = z.object({
   name: z.string().min(2).max(80),
 });
+
+const roleRank: Record<string, number> = {
+  GUEST: 1,
+  MEMBER: 2,
+  MANAGER: 3,
+  ADMIN: 4,
+  OWNER: 5,
+};
 
 workspaceRouter.get("/", async (req, res, next) => {
   try {
@@ -169,7 +181,7 @@ workspaceRouter.post(
       const body = z
         .object({
           email: z.string().email(),
-          role: z.enum(["ADMIN", "MANAGER", "MEMBER", "GUEST"]).default("MEMBER"),
+          role: assignableRoles.default("MEMBER"),
         })
         .parse(req.body);
 
@@ -199,13 +211,11 @@ workspaceRouter.post(
         },
       });
 
-      await prisma.auditLog.create({
-        data: {
-          workspaceId: req.params.workspaceId!,
-          actorId: req.user!.id,
-          action: "workspace.member_invited",
-          metadata: { email: user.email, role: body.role },
-        },
+      await writeAuditLog({
+        workspaceId: req.params.workspaceId!,
+        actorId: req.user!.id,
+        action: "workspace.member_invited",
+        metadata: { email: user.email, role: body.role },
       });
 
       res.status(201).json({
@@ -215,6 +225,149 @@ workspaceRouter.post(
           user: member.user,
           joinedAt: member.createdAt,
         },
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+workspaceRouter.patch(
+  "/:workspaceId/members/:memberId",
+  requireWorkspaceMember("ADMIN"),
+  async (req, res, next) => {
+    try {
+      const body = z.object({ role: roleEnum }).parse(req.body);
+      const actorRole = req.workspaceMembership!.role;
+      const workspaceId = req.params.workspaceId!;
+
+      const member = await prisma.workspaceMember.findFirst({
+        where: { id: req.params.memberId, workspaceId },
+        include: { user: { select: { id: true, name: true, email: true } } },
+      });
+      if (!member) throw new NotFoundError("Member not found");
+
+      if (body.role === "OWNER" && actorRole !== "OWNER") {
+        throw new ForbiddenError("Only an owner can assign the owner role");
+      }
+      if (member.role === "OWNER" && actorRole !== "OWNER") {
+        throw new ForbiddenError("Only an owner can change another owner");
+      }
+      if (roleRank[body.role] > roleRank[actorRole]) {
+        throw new ForbiddenError("Cannot assign a role higher than your own");
+      }
+
+      if (member.role === "OWNER" && body.role !== "OWNER") {
+        const owners = await prisma.workspaceMember.count({
+          where: { workspaceId, role: "OWNER" },
+        });
+        if (owners <= 1) {
+          throw new AppError("Cannot demote the last owner", 400, "LAST_OWNER");
+        }
+      }
+
+      const updated = await prisma.workspaceMember.update({
+        where: { id: member.id },
+        data: { role: body.role },
+        include: { user: { select: { id: true, name: true, email: true } } },
+      });
+
+      await writeAuditLog({
+        workspaceId,
+        actorId: req.user!.id,
+        action: "workspace.member_role_changed",
+        metadata: {
+          memberId: member.id,
+          userId: member.userId,
+          from: member.role,
+          to: body.role,
+        },
+      });
+
+      res.json({
+        member: {
+          id: updated.id,
+          role: updated.role,
+          user: updated.user,
+          joinedAt: updated.createdAt,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+workspaceRouter.delete(
+  "/:workspaceId/members/:memberId",
+  requireWorkspaceMember("ADMIN"),
+  async (req, res, next) => {
+    try {
+      const actorRole = req.workspaceMembership!.role;
+      const workspaceId = req.params.workspaceId!;
+
+      const member = await prisma.workspaceMember.findFirst({
+        where: { id: req.params.memberId, workspaceId },
+      });
+      if (!member) throw new NotFoundError("Member not found");
+
+      if (member.userId === req.user!.id) {
+        throw new AppError("Use leave workspace instead of removing yourself", 400, "SELF_REMOVE");
+      }
+      if (member.role === "OWNER" && actorRole !== "OWNER") {
+        throw new ForbiddenError("Only an owner can remove another owner");
+      }
+      if (roleRank[member.role] >= roleRank[actorRole] && actorRole !== "OWNER") {
+        throw new ForbiddenError("Cannot remove a member with equal or higher role");
+      }
+      if (member.role === "OWNER") {
+        const owners = await prisma.workspaceMember.count({
+          where: { workspaceId, role: "OWNER" },
+        });
+        if (owners <= 1) {
+          throw new AppError("Cannot remove the last owner", 400, "LAST_OWNER");
+        }
+      }
+
+      await prisma.workspaceMember.delete({ where: { id: member.id } });
+
+      await writeAuditLog({
+        workspaceId,
+        actorId: req.user!.id,
+        action: "workspace.member_removed",
+        metadata: { memberId: member.id, userId: member.userId, role: member.role },
+      });
+
+      res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+workspaceRouter.get(
+  "/:workspaceId/audit-logs",
+  requireWorkspaceMember("ADMIN"),
+  async (req, res, next) => {
+    try {
+      const take = Math.min(Number(req.query.limit) || 50, 100);
+      const logs = await prisma.auditLog.findMany({
+        where: { workspaceId: req.params.workspaceId },
+        include: {
+          actor: { select: { id: true, name: true, email: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        take,
+      });
+
+      res.json({
+        logs: logs.map((l) => ({
+          id: l.id,
+          action: l.action,
+          metadata: l.metadata,
+          createdAt: l.createdAt,
+          actor: l.actor,
+        })),
       });
     } catch (error) {
       next(error);

@@ -29,6 +29,11 @@ const envSchema = z.object({
   LLM_MODEL: z.string().optional().default("llama3.2"),
   GEMINI_API_KEY: z.string().optional().default(""),
   GEMINI_MODEL: z.string().optional().default("gemini-2.5-flash-lite"),
+  SMTP_HOST: z.string().optional().default("smtp.gmail.com"),
+  SMTP_PORT: z.coerce.number().optional().default(587),
+  SMTP_USER: z.string().optional().default(""),
+  SMTP_PASS: z.string().optional().default(""),
+  SMTP_FROM: z.string().optional().default(""),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -76,4 +81,5 @@ export const env = {
     : data.LLM_BASE_URL
       ? ("openai_compatible" as const)
       : ("none" as const),
+  smtpConfigured: Boolean(data.SMTP_USER && data.SMTP_PASS),
 };

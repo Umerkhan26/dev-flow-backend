@@ -27,13 +27,43 @@ export function hashToken(token: string) {
 export async function issueRefreshToken(userId: string) {
   const token = crypto.randomBytes(48).toString("hex");
   const tokenHash = hashToken(token);
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
   await prisma.refreshToken.create({
     data: { userId, tokenHash, expiresAt },
   });
 
   return token;
+}
+
+/** Create a 6-digit OTP for password reset (raw OTP returned once). */
+export async function issuePasswordResetOtp(userId: string) {
+  await prisma.passwordResetToken.updateMany({
+    where: { userId, usedAt: null },
+    data: { usedAt: new Date() },
+  });
+
+  const otp = String(crypto.randomInt(100000, 999999));
+  const tokenHash = hashToken(otp);
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+  await prisma.passwordResetToken.create({
+    data: { userId, tokenHash, expiresAt },
+  });
+
+  return otp;
+}
+
+export async function findValidPasswordReset(userId: string, otp: string) {
+  const tokenHash = hashToken(otp);
+  return prisma.passwordResetToken.findFirst({
+    where: {
+      userId,
+      tokenHash,
+      usedAt: null,
+      expiresAt: { gt: new Date() },
+    },
+  });
 }
 
 export function slugify(input: string) {

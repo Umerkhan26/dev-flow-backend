@@ -48,6 +48,7 @@ model User {
 
   memberships       WorkspaceMember[]
   refreshTokens     RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
   createdWorkspaces Workspace[]       @relation("WorkspaceCreator")
   auditLogs         AuditLog[]
   createdProjects   Project[]         @relation("ProjectCreator")
@@ -310,6 +311,21 @@ model RefreshToken {
 
   @@index([userId])
   @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("password_reset_tokens")
 }
 
 model AuditLog {

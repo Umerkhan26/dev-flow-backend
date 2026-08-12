@@ -1,12 +1,16 @@
 import { Router } from "express";
 import { z } from "zod";
+import { env } from "../../config/env.js";
 import { prisma } from "../../database/prisma.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { writeAuditLog } from "../../utils/audit.js";
+import { sendPasswordResetOtpEmail } from "../../utils/mail.js";
 import { AppError, ConflictError, UnauthorizedError } from "../../utils/errors.js";
 import {
+  findValidPasswordReset,
   hashPassword,
   hashToken,
+  issuePasswordResetOtp,
   issueRefreshToken,
   signAccessToken,
   verifyPassword,
@@ -145,17 +149,108 @@ authRouter.post("/logout", requireAuth, async (req, res, next) => {
   }
 });
 
-authRouter.post("/forgot-password", async (_req, res, next) => {
+authRouter.post("/forgot-password", async (req, res, next) => {
   try {
-    throw new AppError("Password reset is not available yet", 501, "NOT_IMPLEMENTED");
+    const body = z.object({ email: z.string().email() }).parse(req.body);
+    const email = body.email.toLowerCase();
+    const user = await prisma.user.findUnique({ where: { email } });
+
+    const generic = {
+      ok: true,
+      message: "If an account exists for that email, a 6-digit code has been sent.",
+    };
+
+    if (!user) {
+      res.json(generic);
+      return;
+    }
+
+    const otp = await issuePasswordResetOtp(user.id);
+    const mail = await sendPasswordResetOtpEmail(email, otp);
+
+    await writeAuditLog({
+      action: "auth.password_reset_requested",
+      actorId: user.id,
+      metadata: { email, emailed: mail.sent },
+    });
+
+    res.json({
+      ...generic,
+      emailSent: mail.sent,
+      // Local/dev convenience when SMTP is not configured
+      ...(env.NODE_ENV !== "production" && !mail.sent ? { devCode: otp } : {}),
+    });
   } catch (error) {
     next(error);
   }
 });
 
-authRouter.post("/reset-password", async (_req, res, next) => {
+authRouter.post("/verify-reset-otp", async (req, res, next) => {
   try {
-    throw new AppError("Password reset is not available yet", 501, "NOT_IMPLEMENTED");
+    const body = z
+      .object({
+        email: z.string().email(),
+        code: z.string().regex(/^\d{6}$/, "Code must be 6 digits"),
+      })
+      .parse(req.body);
+
+    const email = body.email.toLowerCase();
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) throw new UnauthorizedError("Invalid or expired code");
+
+    const stored = await findValidPasswordReset(user.id, body.code);
+    if (!stored) throw new UnauthorizedError("Invalid or expired code");
+
+    res.json({ ok: true, message: "Code verified. Set your new password." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+authRouter.post("/reset-password", async (req, res, next) => {
+  try {
+    const body = z
+      .object({
+        email: z.string().email(),
+        code: z.string().regex(/^\d{6}$/, "Code must be 6 digits"),
+        password: z.string().min(8).max(128),
+      })
+      .parse(req.body);
+
+    const email = body.email.toLowerCase();
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) throw new UnauthorizedError("Invalid or expired code");
+
+    const stored = await findValidPasswordReset(user.id, body.code);
+    if (!stored) throw new UnauthorizedError("Invalid or expired code");
+
+    const passwordHash = await hashPassword(body.password);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: user.id },
+        data: { passwordHash },
+      });
+      await tx.passwordResetToken.update({
+        where: { id: stored.id },
+        data: { usedAt: new Date() },
+      });
+      await tx.passwordResetToken.updateMany({
+        where: { userId: user.id, usedAt: null },
+        data: { usedAt: new Date() },
+      });
+      await tx.refreshToken.updateMany({
+        where: { userId: user.id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+    });
+
+    await writeAuditLog({
+      action: "auth.password_reset_completed",
+      actorId: user.id,
+    });
+
+    res.json({ ok: true, message: "Password updated. You can sign in now." });
   } catch (error) {
     next(error);
   }
