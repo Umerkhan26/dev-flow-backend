@@ -16,6 +16,7 @@ import {
   listGithubRepos,
 } from "../../integrations/github/github.client.js";
 import { queueRepositorySync, syncRepositoryPullRequests } from "../../integrations/github/github.sync.js";
+import { enqueueRepoSync } from "../../jobs/sync.queue.js";
 import { notifyWorkspaceMembers } from "../../realtime/socket.js";
 
 export const githubRouter = Router();
@@ -342,6 +343,7 @@ githubRouter.post(
       const body = z
         .object({
           baseBranch: z.union([z.string().min(1).max(255), z.literal(""), z.null()]).optional(),
+          background: z.boolean().optional(),
         })
         .parse(req.body ?? {});
 
@@ -359,6 +361,26 @@ githubRouter.post(
         throw new AppError("Forbidden", 403, "FORBIDDEN");
       }
 
+      if (body.background) {
+        const queued = await enqueueRepoSync(repository.id, {
+          baseBranch: body.baseBranch,
+          silent: false,
+        });
+        await writeAuditLog({
+          action: "github.repo_sync_queued",
+          actorId: req.user!.id,
+          workspaceId: repository.workspaceId,
+          metadata: {
+            repositoryId: repository.id,
+            fullName: repository.fullName,
+            baseBranch: body.baseBranch ?? repository.syncBaseBranch,
+            ...queued,
+          },
+        });
+        res.status(202).json({ ok: true, queued: true, mode: queued.mode });
+        return;
+      }
+
       const result = await syncRepositoryPullRequests(repository.id, {
         baseBranch: body.baseBranch,
       });
@@ -373,6 +395,39 @@ githubRouter.post(
         },
       });
       res.json({ ok: true, ...result });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+githubRouter.delete(
+  "/repositories/:repositoryId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const repository = await prisma.repository.findUnique({
+        where: { id: req.params.repositoryId },
+      });
+      if (!repository) throw new NotFoundError("Repository not found");
+
+      const membership = await prisma.workspaceMember.findUnique({
+        where: {
+          workspaceId_userId: { workspaceId: repository.workspaceId, userId: req.user!.id },
+        },
+      });
+      if (!membership || !["OWNER", "ADMIN", "MANAGER"].includes(membership.role)) {
+        throw new AppError("Forbidden", 403, "FORBIDDEN");
+      }
+
+      await prisma.repository.delete({ where: { id: repository.id } });
+      await writeAuditLog({
+        action: "github.repo_unlinked",
+        actorId: req.user!.id,
+        workspaceId: repository.workspaceId,
+        metadata: { repositoryId: repository.id, fullName: repository.fullName },
+      });
+      res.json({ ok: true });
     } catch (error) {
       next(error);
     }
@@ -422,8 +477,34 @@ githubRouter.get(
   requireWorkspaceMember("GUEST"),
   async (req, res, next) => {
     try {
+      const query = z
+        .object({
+          state: z.enum(["OPEN", "MERGED", "CLOSED", "ALL"]).optional(),
+          repositoryId: z.string().optional(),
+          linked: z.enum(["1", "0", "true", "false"]).optional(),
+        })
+        .parse(req.query);
+
+      const linked =
+        query.linked === "1" || query.linked === "true"
+          ? true
+          : query.linked === "0" || query.linked === "false"
+            ? false
+            : undefined;
+
       const prs = await prisma.pullRequest.findMany({
-        where: { repository: { workspaceId: req.params.workspaceId } },
+        where: {
+          repository: {
+            workspaceId: req.params.workspaceId,
+            ...(query.repositoryId ? { id: query.repositoryId } : {}),
+          },
+          ...(query.state && query.state !== "ALL" ? { state: query.state } : {}),
+          ...(linked === true
+            ? { issueId: { not: null } }
+            : linked === false
+              ? { issueId: null }
+              : {}),
+        },
         include: {
           repository: { select: { id: true, fullName: true, htmlUrl: true } },
           issue: { select: { id: true, number: true, title: true, projectId: true } },
@@ -589,11 +670,6 @@ githubRouter.post("/webhooks/github", async (req, res, next) => {
     }
 
     const event = req.header("x-github-event");
-    if (event !== "pull_request") {
-      res.status(202).json({ ignored: true });
-      return;
-    }
-
     const payload = req.body as {
       action?: string;
       repository?: { id: number; full_name: string };
@@ -610,9 +686,22 @@ githubRouter.post("/webhooks/github", async (req, res, next) => {
         updated_at: string;
         user: { login: string } | null;
       };
+      workflow_run?: {
+        id: number;
+        name: string;
+        display_title?: string;
+        status: string;
+        conclusion: string | null;
+        event: string;
+        head_branch: string | null;
+        html_url: string;
+        run_number: number;
+        created_at: string;
+        updated_at: string;
+      };
     };
 
-    if (!payload.repository || !payload.pull_request) {
+    if (!payload.repository?.id) {
       res.status(202).json({ ignored: true });
       return;
     }
@@ -621,43 +710,112 @@ githubRouter.post("/webhooks/github", async (req, res, next) => {
       where: { githubRepoId: String(payload.repository.id) },
     });
 
-    for (const repository of repositories) {
-      const pr = payload.pull_request;
-      await prisma.pullRequest.upsert({
-        where: {
-          repositoryId_githubPrId: {
-            repositoryId: repository.id,
-            githubPrId: String(pr.id),
-          },
-        },
-        create: {
-          repositoryId: repository.id,
-          githubPrId: String(pr.id),
-          number: pr.number,
-          title: pr.title,
-          body: pr.body,
-          state: pr.merged_at ? "MERGED" : pr.state === "closed" ? "CLOSED" : "OPEN",
-          draft: pr.draft,
-          authorLogin: pr.user?.login ?? "unknown",
-          htmlUrl: pr.html_url,
-          githubCreatedAt: new Date(pr.created_at),
-          githubUpdatedAt: new Date(pr.updated_at),
-          mergedAt: pr.merged_at ? new Date(pr.merged_at) : null,
-        },
-        update: {
-          title: pr.title,
-          body: pr.body,
-          state: pr.merged_at ? "MERGED" : pr.state === "closed" ? "CLOSED" : "OPEN",
-          draft: pr.draft,
-          authorLogin: pr.user?.login ?? "unknown",
-          htmlUrl: pr.html_url,
-          githubUpdatedAt: new Date(pr.updated_at),
-          mergedAt: pr.merged_at ? new Date(pr.merged_at) : null,
-        },
-      });
+    if (repositories.length === 0) {
+      res.status(202).json({ ignored: true, reason: "repo_not_linked" });
+      return;
     }
 
-    res.status(202).json({ ok: true, updated: repositories.length });
+    if (event === "pull_request" && payload.pull_request) {
+      const pr = payload.pull_request;
+      for (const repository of repositories) {
+        await prisma.pullRequest.upsert({
+          where: {
+            repositoryId_githubPrId: {
+              repositoryId: repository.id,
+              githubPrId: String(pr.id),
+            },
+          },
+          create: {
+            repositoryId: repository.id,
+            githubPrId: String(pr.id),
+            number: pr.number,
+            title: pr.title,
+            body: pr.body,
+            state: pr.merged_at ? "MERGED" : pr.state === "closed" ? "CLOSED" : "OPEN",
+            draft: pr.draft,
+            authorLogin: pr.user?.login ?? "unknown",
+            htmlUrl: pr.html_url,
+            githubCreatedAt: new Date(pr.created_at),
+            githubUpdatedAt: new Date(pr.updated_at),
+            mergedAt: pr.merged_at ? new Date(pr.merged_at) : null,
+          },
+          update: {
+            title: pr.title,
+            body: pr.body,
+            state: pr.merged_at ? "MERGED" : pr.state === "closed" ? "CLOSED" : "OPEN",
+            draft: pr.draft,
+            authorLogin: pr.user?.login ?? "unknown",
+            htmlUrl: pr.html_url,
+            githubUpdatedAt: new Date(pr.updated_at),
+            mergedAt: pr.merged_at ? new Date(pr.merged_at) : null,
+          },
+        });
+      }
+      res.status(202).json({ ok: true, event, updated: repositories.length });
+      return;
+    }
+
+    if (event === "workflow_run" && payload.workflow_run) {
+      const run = payload.workflow_run;
+      for (const repository of repositories) {
+        await prisma.workflowRun.upsert({
+          where: {
+            repositoryId_githubRunId: {
+              repositoryId: repository.id,
+              githubRunId: String(run.id),
+            },
+          },
+          create: {
+            repositoryId: repository.id,
+            githubRunId: String(run.id),
+            name: run.name,
+            displayTitle: run.display_title ?? null,
+            status: run.status,
+            conclusion: run.conclusion,
+            event: run.event,
+            branch: run.head_branch,
+            htmlUrl: run.html_url,
+            runNumber: run.run_number,
+            githubCreatedAt: new Date(run.created_at),
+            githubUpdatedAt: new Date(run.updated_at),
+          },
+          update: {
+            name: run.name,
+            displayTitle: run.display_title ?? null,
+            status: run.status,
+            conclusion: run.conclusion,
+            event: run.event,
+            branch: run.head_branch,
+            htmlUrl: run.html_url,
+            runNumber: run.run_number,
+            githubUpdatedAt: new Date(run.updated_at),
+          },
+        });
+
+        if (run.conclusion === "failure" || run.conclusion === "timed_out") {
+          void notifyWorkspaceMembers({
+            workspaceId: repository.workspaceId,
+            type: "WORKFLOW_FAILED",
+            title: `CI failed: ${run.name}`,
+            body: `${repository.fullName}${run.head_branch ? ` · ${run.head_branch}` : ""}`,
+            link: "/app/actions",
+          });
+        }
+      }
+      res.status(202).json({ ok: true, event, updated: repositories.length });
+      return;
+    }
+
+    // Other events (push, etc.): enqueue a background refresh
+    if (event === "push" || event === "create" || event === "delete") {
+      for (const repository of repositories) {
+        void enqueueRepoSync(repository.id, { silent: true });
+      }
+      res.status(202).json({ ok: true, event, queued: repositories.length });
+      return;
+    }
+
+    res.status(202).json({ ignored: true, event });
   } catch (error) {
     next(error);
   }

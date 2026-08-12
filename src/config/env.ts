@@ -34,6 +34,8 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional().default(""),
   SMTP_PASS: z.string().optional().default(""),
   SMTP_FROM: z.string().optional().default(""),
+  /** Optional. When set, repo sync jobs run via BullMQ. Example: redis://127.0.0.1:6379 */
+  REDIS_URL: z.string().optional().default(""),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -82,4 +84,5 @@ export const env = {
       ? ("openai_compatible" as const)
       : ("none" as const),
   smtpConfigured: Boolean(data.SMTP_USER && data.SMTP_PASS),
+  redisConfigured: Boolean(data.REDIS_URL?.trim()),
 };

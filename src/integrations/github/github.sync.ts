@@ -207,9 +207,17 @@ export async function syncRepositoryPullRequests(
 }
 
 export function queueRepositorySync(repositoryId: string, options?: SyncOptions) {
-  setImmediate(() => {
-    void syncRepositoryPullRequests(repositoryId, { ...options, silent: true }).catch((err) => {
-      console.error("Repository sync failed", repositoryId, err);
+  void import("../../jobs/sync.queue.js")
+    .then(({ enqueueRepoSync }) => enqueueRepoSync(repositoryId, options))
+    .catch((err) => {
+      console.error("Failed to enqueue repo sync", repositoryId, err);
+      setImmediate(() => {
+        void syncRepositoryPullRequests(repositoryId, {
+          silent: true,
+          ...options,
+        }).catch((syncErr) => {
+          console.error("Repository sync failed", repositoryId, syncErr);
+        });
+      });
     });
-  });
 }
