@@ -6,6 +6,7 @@ import { env } from "../../config/env.js";
 import { prisma } from "../../database/prisma.js";
 import { requireAuth, requireWorkspaceMember } from "../../middleware/auth.js";
 import { AppError, NotFoundError } from "../../utils/errors.js";
+import { writeAuditLog } from "../../utils/audit.js";
 import { decryptSecret, encryptSecret } from "../../utils/crypto.js";
 import {
   assertGithubConfigured,
@@ -350,6 +351,16 @@ githubRouter.post(
       }
 
       const result = await syncRepositoryPullRequests(repository.id);
+      await writeAuditLog({
+        action: "github.repo_synced",
+        actorId: req.user!.id,
+        workspaceId: repository.workspaceId,
+        metadata: {
+          repositoryId: repository.id,
+          fullName: repository.fullName,
+          ...result,
+        },
+      });
       res.json({ ok: true, ...result });
     } catch (error) {
       next(error);

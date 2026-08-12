@@ -12,7 +12,12 @@ const envSchema = z.object({
   CORS_ORIGIN: z
     .string()
     .default("http://localhost:5173,http://localhost:5174,http://localhost:5175"),
-  FRONTEND_URL: z.string().default("http://localhost:5174"),
+  FRONTEND_URL: z.string().default("http://localhost:5173"),
+  TRUST_PROXY: z
+    .string()
+    .optional()
+    .default("false")
+    .transform((v) => v === "1" || v?.toLowerCase() === "true"),
   GITHUB_CLIENT_ID: z.string().optional().default(""),
   GITHUB_CLIENT_SECRET: z.string().optional().default(""),
   GITHUB_CALLBACK_URL: z
@@ -33,17 +38,42 @@ if (!parsed.success) {
   process.exit(1);
 }
 
+const data = parsed.data;
+
+if (data.NODE_ENV === "production") {
+  const weak = (secret: string) =>
+    secret.length < 32 ||
+    /change-me|dev-access|dev-refresh|secret-min/i.test(secret);
+
+  if (weak(data.JWT_ACCESS_SECRET) || weak(data.JWT_REFRESH_SECRET)) {
+    console.error(
+      "Production requires strong JWT_ACCESS_SECRET and JWT_REFRESH_SECRET (min 32 chars, not default placeholders).",
+    );
+    process.exit(1);
+  }
+
+  if (data.JWT_ACCESS_SECRET === data.JWT_REFRESH_SECRET) {
+    console.error("Production requires distinct JWT_ACCESS_SECRET and JWT_REFRESH_SECRET.");
+    process.exit(1);
+  }
+
+  if (!data.CORS_ORIGIN.trim()) {
+    console.error("Production requires CORS_ORIGIN to be set.");
+    process.exit(1);
+  }
+}
+
 export const env = {
-  ...parsed.data,
-  corsOrigins: parsed.data.CORS_ORIGIN.split(",")
+  ...data,
+  corsOrigins: data.CORS_ORIGIN.split(",")
     .map((origin) => origin.trim())
     .filter(Boolean),
-  githubConfigured: Boolean(parsed.data.GITHUB_CLIENT_ID && parsed.data.GITHUB_CLIENT_SECRET),
+  githubConfigured: Boolean(data.GITHUB_CLIENT_ID && data.GITHUB_CLIENT_SECRET),
   /** Real LLM available via Gemini key and/or OpenAI-compatible base URL */
-  llmConfigured: Boolean(parsed.data.GEMINI_API_KEY || parsed.data.LLM_BASE_URL),
-  llmProvider: parsed.data.GEMINI_API_KEY
+  llmConfigured: Boolean(data.GEMINI_API_KEY || data.LLM_BASE_URL),
+  llmProvider: data.GEMINI_API_KEY
     ? ("gemini" as const)
-    : parsed.data.LLM_BASE_URL
+    : data.LLM_BASE_URL
       ? ("openai_compatible" as const)
       : ("none" as const),
 };

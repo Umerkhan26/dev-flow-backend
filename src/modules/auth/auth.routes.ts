@@ -2,7 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../database/prisma.js";
 import { requireAuth } from "../../middleware/auth.js";
-import { ConflictError, UnauthorizedError } from "../../utils/errors.js";
+import { writeAuditLog } from "../../utils/audit.js";
+import { AppError, ConflictError, UnauthorizedError } from "../../utils/errors.js";
 import {
   hashPassword,
   hashToken,
@@ -41,6 +42,12 @@ authRouter.post("/register", async (req, res, next) => {
     const accessToken = signAccessToken(user);
     const refreshToken = await issueRefreshToken(user.id);
 
+    await writeAuditLog({
+      action: "auth.register",
+      actorId: user.id,
+      metadata: { email: user.email },
+    });
+
     res.status(201).json({
       user: { id: user.id, name: user.name, email: user.email },
       accessToken,
@@ -56,11 +63,21 @@ authRouter.post("/login", async (req, res, next) => {
     const body = loginSchema.parse(req.body);
     const user = await prisma.user.findUnique({ where: { email: body.email.toLowerCase() } });
     if (!user || !(await verifyPassword(body.password, user.passwordHash))) {
+      await writeAuditLog({
+        action: "auth.login_failed",
+        metadata: { email: body.email.toLowerCase() },
+      });
       throw new UnauthorizedError("Invalid email or password");
     }
 
     const accessToken = signAccessToken(user);
     const refreshToken = await issueRefreshToken(user.id);
+
+    await writeAuditLog({
+      action: "auth.login",
+      actorId: user.id,
+      metadata: { email: user.email },
+    });
 
     res.json({
       user: { id: user.id, name: user.name, email: user.email },
@@ -118,7 +135,27 @@ authRouter.post("/logout", requireAuth, async (req, res, next) => {
         data: { revokedAt: new Date() },
       });
     }
+    await writeAuditLog({
+      action: "auth.logout",
+      actorId: req.user!.id,
+    });
     res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+authRouter.post("/forgot-password", async (_req, res, next) => {
+  try {
+    throw new AppError("Password reset is not available yet", 501, "NOT_IMPLEMENTED");
+  } catch (error) {
+    next(error);
+  }
+});
+
+authRouter.post("/reset-password", async (_req, res, next) => {
+  try {
+    throw new AppError("Password reset is not available yet", 501, "NOT_IMPLEMENTED");
   } catch (error) {
     next(error);
   }

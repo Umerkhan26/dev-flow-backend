@@ -12,6 +12,7 @@ import {
 } from "./ai.service.js";
 import { prisma } from "../../database/prisma.js";
 import { ForbiddenError, NotFoundError } from "../../utils/errors.js";
+import { writeAuditLog } from "../../utils/audit.js";
 
 export const aiRouter = Router();
 
@@ -87,6 +88,17 @@ aiRouter.post(
         body.question,
         { contextType: body.contextType, contextId: body.contextId },
       );
+      await writeAuditLog({
+        action: "ai.ask",
+        actorId: req.user!.id,
+        workspaceId: req.params.workspaceId,
+        metadata: {
+          questionLength: body.question.length,
+          contextType: body.contextType ?? null,
+          contextId: body.contextId ?? null,
+          provider: result.provider,
+        },
+      });
       res.json(result);
     } catch (error) {
       next(error);
