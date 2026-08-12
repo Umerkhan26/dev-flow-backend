@@ -6,6 +6,7 @@ import { requireIssueAccess } from "../../middleware/resourceAccess.js";
 import {
   askWorkspaceQuestion,
   getAiStatus,
+  reviewPullRequest,
   summarizeCycle,
   summarizeIssue,
   summarizePullRequest,
@@ -35,21 +36,35 @@ aiRouter.post("/ai/summarize/issues/:issueId", requireIssueAccess("GUEST"), asyn
   }
 });
 
+async function requirePrMember(pullRequestId: string, userId: string) {
+  const pr = await prisma.pullRequest.findUnique({
+    where: { id: pullRequestId },
+    include: { repository: { select: { workspaceId: true } } },
+  });
+  if (!pr) throw new NotFoundError("Pull request not found");
+  const membership = await prisma.workspaceMember.findUnique({
+    where: {
+      workspaceId_userId: { workspaceId: pr.repository.workspaceId, userId },
+    },
+  });
+  if (!membership) throw new ForbiddenError("Not a workspace member");
+  return pr;
+}
+
 aiRouter.post("/ai/summarize/pull-requests/:pullRequestId", async (req, res, next) => {
   try {
-    const pr = await prisma.pullRequest.findUnique({
-      where: { id: req.params.pullRequestId },
-      include: { repository: { select: { workspaceId: true } } },
-    });
-    if (!pr) throw new NotFoundError("Pull request not found");
-    const membership = await prisma.workspaceMember.findUnique({
-      where: {
-        workspaceId_userId: { workspaceId: pr.repository.workspaceId, userId: req.user!.id },
-      },
-    });
-    if (!membership) throw new ForbiddenError("Not a workspace member");
-
+    const pr = await requirePrMember(req.params.pullRequestId, req.user!.id);
     const result = await summarizePullRequest(pr.id, req.user!.id);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+aiRouter.post("/ai/review/pull-requests/:pullRequestId", async (req, res, next) => {
+  try {
+    const pr = await requirePrMember(req.params.pullRequestId, req.user!.id);
+    const result = await reviewPullRequest(pr.id, req.user!.id);
     res.json(result);
   } catch (error) {
     next(error);

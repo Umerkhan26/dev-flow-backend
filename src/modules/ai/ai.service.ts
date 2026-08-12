@@ -7,6 +7,7 @@ import {
   heuristicAsk,
   heuristicCycleSummary,
   heuristicIssueSummary,
+  heuristicPrReview,
   heuristicPrSummary,
   type AskContext,
   type CycleContext,
@@ -184,6 +185,51 @@ export async function summarizePullRequest(pullRequestId: string, userId: string
   });
 
   return { summary: text, provider, interactionId: saved.id };
+}
+
+export async function reviewPullRequest(pullRequestId: string, userId: string) {
+  const pr = await prisma.pullRequest.findUnique({
+    where: { id: pullRequestId },
+    include: {
+      repository: true,
+      issue: { include: { project: true } },
+    },
+  });
+  if (!pr) throw new NotFoundError("Pull request not found");
+  await assertWorkspaceMember(pr.repository.workspaceId, userId);
+
+  const ctx: PrContext = {
+    number: pr.number,
+    title: pr.title,
+    body: pr.body,
+    state: pr.state,
+    draft: pr.draft,
+    author: pr.authorLogin,
+    repo: pr.repository.fullName,
+    issue: pr.issue
+      ? {
+          key: `${pr.issue.project.key}-${pr.issue.number}`,
+          title: pr.issue.title,
+          status: pr.issue.status,
+        }
+      : null,
+  };
+
+  const fallback = heuristicPrReview(ctx);
+  const prompt = `You are a senior code reviewer. Suggest practical review focus areas, a short checklist, and one polite review comment for this pull request. Do not invent file diffs you cannot see. Keep it concise markdown.\n\nCONTEXT:\n${JSON.stringify(ctx, null, 2)}`;
+  const { text, provider } = await generate(prompt, fallback);
+
+  const saved = await persist({
+    workspaceId: pr.repository.workspaceId,
+    userId,
+    kind: "REVIEW_PR",
+    targetType: "PULL_REQUEST",
+    targetId: pr.id,
+    response: text,
+    provider,
+  });
+
+  return { review: text, provider, interactionId: saved.id };
 }
 
 export async function summarizeCycle(cycleId: string, userId: string) {

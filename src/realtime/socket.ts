@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import { Server } from "socket.io";
 import { env } from "../config/env.js";
 import { prisma } from "../database/prisma.js";
+import { notifySlackForWorkspace } from "../utils/slack.js";
 
 export type RealtimePayload = {
   type: string;
@@ -160,6 +161,13 @@ export async function notifyWorkspaceMembers(input: {
       readAt: null,
     });
   }
+
+  notifySlackForWorkspace({
+    workspaceId: input.workspaceId,
+    title: input.title,
+    body: input.body,
+    link: input.link,
+  });
 
   return recent;
 }

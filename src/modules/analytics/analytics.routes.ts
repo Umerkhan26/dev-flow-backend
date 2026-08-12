@@ -304,8 +304,56 @@ analyticsRouter.get(
         };
       });
 
+      const [doneEvents, mergeEvents] = await Promise.all([
+        prisma.issue.findMany({
+          where: {
+            ...issueWhere,
+            status: "DONE",
+            updatedAt: { gte: from, lte: to },
+          },
+          select: { updatedAt: true },
+        }),
+        prisma.pullRequest.findMany({
+          where: {
+            repository: { workspaceId },
+            state: "MERGED",
+            mergedAt: { gte: from, lte: to },
+          },
+          select: { mergedAt: true },
+        }),
+      ]);
+
+      function dayKey(d: Date) {
+        return d.toISOString().slice(0, 10);
+      }
+
+      const dayMap = new Map<string, { date: string; done: number; merged: number }>();
+      const cursor = new Date(from);
+      cursor.setUTCHours(0, 0, 0, 0);
+      const endDay = new Date(to);
+      endDay.setUTCHours(0, 0, 0, 0);
+      while (cursor <= endDay) {
+        const key = dayKey(cursor);
+        dayMap.set(key, { date: key, done: 0, merged: 0 });
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+      }
+      for (const issue of doneEvents) {
+        const key = dayKey(issue.updatedAt);
+        const row = dayMap.get(key);
+        if (row) row.done += 1;
+      }
+      for (const pr of mergeEvents) {
+        if (!pr.mergedAt) continue;
+        const key = dayKey(pr.mergedAt);
+        const row = dayMap.get(key);
+        if (row) row.merged += 1;
+      }
+
       res.json({
         window: { from: from.toISOString(), to: to.toISOString() },
+        filters: {
+          projectId: query.projectId ?? null,
+        },
         summary: {
           projects: projectsCount,
           members: membersCount,
@@ -319,6 +367,9 @@ analyticsRouter.get(
           prsMergedInWindow,
           cyclesActive,
           cyclesAtRisk,
+        },
+        series: {
+          byDay: [...dayMap.values()],
         },
         issuesByStatus,
         issuesByPriority,

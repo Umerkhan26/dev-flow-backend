@@ -5,6 +5,7 @@ import { requireAuth, requireWorkspaceMember } from "../../middleware/auth.js";
 import { AppError, ConflictError, ForbiddenError, NotFoundError } from "../../utils/errors.js";
 import { writeAuditLog } from "../../utils/audit.js";
 import { slugify } from "../auth/auth.service.js";
+import { encryptSecret } from "../../utils/crypto.js";
 
 export const workspaceRouter = Router();
 
@@ -107,13 +108,22 @@ workspaceRouter.get("/:workspaceId", requireWorkspaceMember("GUEST"), async (req
   try {
     const workspace = await prisma.workspace.findUnique({
       where: { id: req.params.workspaceId },
-      select: { id: true, name: true, slug: true, createdAt: true, updatedAt: true },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        createdAt: true,
+        updatedAt: true,
+        slackWebhookEnc: true,
+      },
     });
     if (!workspace) throw new NotFoundError("Workspace not found");
 
+    const { slackWebhookEnc, ...rest } = workspace;
     res.json({
       workspace: {
-        ...workspace,
+        ...rest,
+        slackConfigured: Boolean(slackWebhookEnc),
         role: req.workspaceMembership!.role,
       },
     });
@@ -124,11 +134,29 @@ workspaceRouter.get("/:workspaceId", requireWorkspaceMember("GUEST"), async (req
 
 workspaceRouter.patch("/:workspaceId", requireWorkspaceMember("ADMIN"), async (req, res, next) => {
   try {
-    const body = z.object({ name: z.string().min(2).max(80) }).parse(req.body);
+    const body = z
+      .object({
+        name: z.string().min(2).max(80).optional(),
+        slackWebhookUrl: z.union([z.string().url().max(500), z.literal(""), z.null()]).optional(),
+      })
+      .refine((v) => v.name !== undefined || v.slackWebhookUrl !== undefined, {
+        message: "Provide name and/or slackWebhookUrl",
+      })
+      .parse(req.body);
+
+    const data: { name?: string; slackWebhookEnc?: string | null } = {};
+    if (body.name !== undefined) data.name = body.name;
+    if (body.slackWebhookUrl !== undefined) {
+      data.slackWebhookEnc =
+        body.slackWebhookUrl && body.slackWebhookUrl.length > 0
+          ? encryptSecret(body.slackWebhookUrl)
+          : null;
+    }
+
     const workspace = await prisma.workspace.update({
       where: { id: req.params.workspaceId },
-      data: { name: body.name },
-      select: { id: true, name: true, slug: true, updatedAt: true },
+      data,
+      select: { id: true, name: true, slug: true, updatedAt: true, slackWebhookEnc: true },
     });
 
     await prisma.auditLog.create({
@@ -136,11 +164,23 @@ workspaceRouter.patch("/:workspaceId", requireWorkspaceMember("ADMIN"), async (r
         workspaceId: workspace.id,
         actorId: req.user!.id,
         action: "workspace.updated",
-        metadata: { name: workspace.name },
+        metadata: {
+          name: body.name ?? undefined,
+          slackUpdated: body.slackWebhookUrl !== undefined,
+          slackConfigured: Boolean(workspace.slackWebhookEnc),
+        },
       },
     });
 
-    res.json({ workspace });
+    res.json({
+      workspace: {
+        id: workspace.id,
+        name: workspace.name,
+        slug: workspace.slug,
+        updatedAt: workspace.updatedAt,
+        slackConfigured: Boolean(workspace.slackWebhookEnc),
+      },
+    });
   } catch (error) {
     next(error);
   }

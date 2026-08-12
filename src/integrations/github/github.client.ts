@@ -119,4 +119,26 @@ export async function listGithubPullRequests(token: string, owner: string, repo:
   return pulls;
 }
 
-export type { GithubPull, GithubRepo };
+type GithubWorkflowRun = {
+  id: number;
+  name: string;
+  display_title?: string;
+  status: string;
+  conclusion: string | null;
+  event: string;
+  head_branch: string | null;
+  html_url: string;
+  run_number: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listGithubWorkflowRuns(token: string, owner: string, repo: string) {
+  const data = await githubFetch<{ workflow_runs: GithubWorkflowRun[] }>(
+    `/repos/${owner}/${repo}/actions/runs?per_page=30`,
+    token,
+  );
+  return data.workflow_runs ?? [];
+}
+
+export type { GithubPull, GithubRepo, GithubWorkflowRun };

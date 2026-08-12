@@ -65,12 +65,13 @@ model User {
 }
 
 model Workspace {
-  id          String   @id @default(cuid())
-  name        String
-  slug        String   @unique
-  createdById String   @map("created_by_id")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id               String   @id @default(cuid())
+  name             String
+  slug             String   @unique
+  createdById      String   @map("created_by_id")
+  slackWebhookEnc  String?  @map("slack_webhook_enc") @db.Text
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
 
   createdBy User              @relation("WorkspaceCreator", fields: [createdById], references: [id])
   members   WorkspaceMember[]
@@ -265,11 +266,36 @@ model Repository {
   workspace    Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   connection   GithubConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
   pullRequests PullRequest[]
+  workflowRuns WorkflowRun[]
 
   @@unique([workspaceId, githubRepoId])
   @@index([workspaceId])
   @@index([fullName])
   @@map("repositories")
+}
+
+model WorkflowRun {
+  id               String   @id @default(cuid())
+  repositoryId     String   @map("repository_id")
+  githubRunId      String   @map("github_run_id")
+  name             String
+  displayTitle     String?  @map("display_title")
+  status           String
+  conclusion       String?
+  event            String?
+  branch           String?
+  htmlUrl          String   @map("html_url")
+  runNumber        Int      @map("run_number")
+  githubCreatedAt  DateTime? @map("github_created_at")
+  githubUpdatedAt  DateTime? @map("github_updated_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([repositoryId, githubRunId])
+  @@index([repositoryId, githubUpdatedAt])
+  @@map("workflow_runs")
 }
 
 model PullRequest {
@@ -346,6 +372,7 @@ model AuditLog {
 enum AiKind {
   SUMMARY_ISSUE
   SUMMARY_PR
+  REVIEW_PR
   SUMMARY_CYCLE
   ASK
 }
@@ -382,6 +409,7 @@ enum NotificationType {
   CYCLE_CREATED
   CYCLE_UPDATED
   REPO_SYNCED
+  WORKFLOW_FAILED
   SYSTEM
 }
 

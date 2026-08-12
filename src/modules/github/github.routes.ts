@@ -390,6 +390,55 @@ githubRouter.get(
   },
 );
 
+githubRouter.get(
+  "/workspaces/:workspaceId/workflow-runs",
+  requireAuth,
+  requireWorkspaceMember("GUEST"),
+  async (req, res, next) => {
+    try {
+      const query = z
+        .object({
+          repositoryId: z.string().optional(),
+          limit: z.coerce.number().int().min(1).max(100).optional(),
+        })
+        .parse(req.query);
+
+      const runs = await prisma.workflowRun.findMany({
+        where: {
+          repository: {
+            workspaceId: req.params.workspaceId,
+            ...(query.repositoryId ? { id: query.repositoryId } : {}),
+          },
+        },
+        include: {
+          repository: { select: { id: true, fullName: true, htmlUrl: true } },
+        },
+        orderBy: { githubUpdatedAt: "desc" },
+        take: query.limit ?? 40,
+      });
+
+      res.json({
+        workflowRuns: runs.map((r) => ({
+          id: r.id,
+          name: r.name,
+          displayTitle: r.displayTitle,
+          status: r.status,
+          conclusion: r.conclusion,
+          event: r.event,
+          branch: r.branch,
+          htmlUrl: r.htmlUrl,
+          runNumber: r.runNumber,
+          githubCreatedAt: r.githubCreatedAt,
+          githubUpdatedAt: r.githubUpdatedAt,
+          repository: r.repository,
+        })),
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 githubRouter.get("/pull-requests/:pullRequestId", requireAuth, async (req, res, next) => {
   try {
     const pr = await prisma.pullRequest.findUnique({

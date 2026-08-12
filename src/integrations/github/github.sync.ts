@@ -1,7 +1,11 @@
 import { prisma } from "../../database/prisma.js";
 import { decryptSecret } from "../../utils/crypto.js";
 import { notifyWorkspaceMembers } from "../../realtime/socket.js";
-import { listGithubPullRequests, type GithubPull } from "./github.client.js";
+import {
+  listGithubPullRequests,
+  listGithubWorkflowRuns,
+  type GithubPull,
+} from "./github.client.js";
 
 function mapPrState(pr: GithubPull) {
   if (pr.merged_at) return "MERGED" as const;
@@ -60,6 +64,53 @@ export async function syncRepositoryPullRequests(repositoryId: string) {
       });
     }
 
+    let workflowSynced = 0;
+    let failedRuns = 0;
+    try {
+      const runs = await listGithubWorkflowRuns(token, repository.owner, repository.name);
+      for (const run of runs) {
+        await prisma.workflowRun.upsert({
+          where: {
+            repositoryId_githubRunId: {
+              repositoryId,
+              githubRunId: String(run.id),
+            },
+          },
+          create: {
+            repositoryId,
+            githubRunId: String(run.id),
+            name: run.name,
+            displayTitle: run.display_title ?? null,
+            status: run.status,
+            conclusion: run.conclusion,
+            event: run.event,
+            branch: run.head_branch,
+            htmlUrl: run.html_url,
+            runNumber: run.run_number,
+            githubCreatedAt: new Date(run.created_at),
+            githubUpdatedAt: new Date(run.updated_at),
+          },
+          update: {
+            name: run.name,
+            displayTitle: run.display_title ?? null,
+            status: run.status,
+            conclusion: run.conclusion,
+            event: run.event,
+            branch: run.head_branch,
+            htmlUrl: run.html_url,
+            runNumber: run.run_number,
+            githubUpdatedAt: new Date(run.updated_at),
+          },
+        });
+        if (run.conclusion === "failure" || run.conclusion === "timed_out") {
+          failedRuns += 1;
+        }
+      }
+      workflowSynced = runs.length;
+    } catch (workflowErr) {
+      console.error("Workflow sync failed", repositoryId, workflowErr);
+    }
+
     await prisma.repository.update({
       where: { id: repositoryId },
       data: {
@@ -73,11 +124,21 @@ export async function syncRepositoryPullRequests(repositoryId: string) {
       workspaceId: repository.workspaceId,
       type: "REPO_SYNCED",
       title: `Synced ${repository.fullName}`,
-      body: `${pulls.length} pull request(s) imported`,
-      link: "/app/pull-requests",
+      body: `${pulls.length} PR(s), ${workflowSynced} workflow run(s)`,
+      link: "/app/repositories",
     });
 
-    return { synced: pulls.length };
+    if (failedRuns > 0) {
+      void notifyWorkspaceMembers({
+        workspaceId: repository.workspaceId,
+        type: "WORKFLOW_FAILED",
+        title: `CI failures in ${repository.fullName}`,
+        body: `${failedRuns} recent workflow run(s) failed`,
+        link: "/app/actions",
+      });
+    }
+
+    return { synced: pulls.length, workflowRuns: workflowSynced, failedRuns };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Sync failed";
     await prisma.repository.update({

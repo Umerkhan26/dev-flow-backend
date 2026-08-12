@@ -125,6 +125,58 @@ export function heuristicPrSummary(ctx: PrContext) {
   return lines.join("\n");
 }
 
+export function heuristicPrReview(ctx: PrContext) {
+  const titleLower = ctx.title.toLowerCase();
+  const bodyLower = (ctx.body ?? "").toLowerCase();
+  const risky =
+    /auth|password|token|secret|migrat|schema|billing|payment|permission|role|sql|xss|csrf/.test(
+      `${titleLower} ${bodyLower}`,
+    );
+
+  const lines = [
+    `## PR review suggestions`,
+    `**#${ctx.number} ${ctx.title}** (\`${ctx.repo}\`)`,
+    ``,
+    `### Before you approve`,
+  ];
+
+  if (ctx.draft) {
+    lines.push(`- This is still a **draft** — treat suggestions as early feedback, not merge blockers.`);
+  }
+  if (!ctx.body?.trim()) {
+    lines.push(`- Ask for a short description: intent, risk, and how to test.`);
+  } else {
+    lines.push(`- Cross-check the description against the actual diff (title/body can drift).`);
+  }
+  if (ctx.issue) {
+    lines.push(
+      `- Confirm this closes or advances **${ctx.issue.key}** (currently ${ctx.issue.status.replaceAll("_", " ")}).`,
+    );
+  } else {
+    lines.push(`- Link a DevFlow issue so acceptance criteria are visible during review.`);
+  }
+  if (risky) {
+    lines.push(
+      `- **Elevated risk keywords** detected (auth/data/permissions/etc.) — prioritize security, migrations, and rollback notes.`,
+    );
+  }
+
+  lines.push(
+    ``,
+    `### Suggested checklist`,
+    `- [ ] Behavior matches the stated intent`,
+    `- [ ] Edge cases / error paths covered or explicitly deferred`,
+    `- [ ] Tests or manual verification steps are clear`,
+    `- [ ] No secrets or env-specific hardcoding in the change`,
+    `- [ ] Docs / changelog updated if this is user-facing`,
+    ``,
+    `### Suggested review comment`,
+    `> Thanks for the PR. Can you confirm the test plan and call out any follow-ups we should track on the linked issue?`,
+  );
+
+  return lines.join("\n");
+}
+
 export function heuristicCycleSummary(ctx: CycleContext) {
   const lines = [
     `## Cycle delivery summary`,
