@@ -174,11 +174,13 @@ authRouter.post("/forgot-password", async (req, res, next) => {
       metadata: { email, emailed: mail.sent },
     });
 
+    const showDevCode = env.NODE_ENV !== "production" && !mail.sent;
+
     res.json({
       ...generic,
       emailSent: mail.sent,
-      // Local/dev convenience when SMTP is not configured
-      ...(env.NODE_ENV !== "production" && !mail.sent ? { devCode: otp } : {}),
+      ...("warning" in mail && mail.warning ? { warning: mail.warning } : {}),
+      ...(showDevCode ? { devCode: otp } : {}),
     });
   } catch (error) {
     next(error);

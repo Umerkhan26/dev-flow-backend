@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import { env } from "../config/env.js";
+import { AppError } from "./errors.js";
 
 export async function sendPasswordResetOtpEmail(to: string, otp: string) {
   const subject = "DevFlow AI password reset code";
@@ -24,17 +25,41 @@ export async function sendPasswordResetOtpEmail(to: string, otp: string) {
     secure: env.SMTP_PORT === 465,
     auth: {
       user: env.SMTP_USER,
-      pass: env.SMTP_PASS,
+      pass: env.SMTP_PASS.replace(/\s+/g, ""),
     },
   });
 
-  await transporter.sendMail({
-    from: env.SMTP_FROM || env.SMTP_USER,
-    to,
-    subject,
-    text,
-    html,
-  });
+  try {
+    await transporter.sendMail({
+      from: env.SMTP_FROM || env.SMTP_USER,
+      to,
+      subject,
+      text,
+      html,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "SMTP send failed";
+    console.error("[password-reset-otp] send failed:", message);
+    console.info(`[password-reset-otp] Fallback code for ${to}: ${otp}`);
+
+    if (env.NODE_ENV === "production") {
+      throw new AppError(
+        /Invalid login|BadCredentials|EAUTH/i.test(message)
+          ? "Gmail SMTP login failed. Check SMTP_USER and App Password."
+          : "Could not send reset email. Try again later.",
+        502,
+        "EMAIL_SEND_FAILED",
+      );
+    }
+
+    // Dev: keep flow usable with on-screen OTP when Gmail rejects credentials
+    return {
+      sent: false as const,
+      reason: "smtp_auth_failed" as const,
+      warning:
+        "Gmail rejected SMTP login. Fix App Password in .env. Meanwhile use the on-screen code.",
+    };
+  }
 
   return { sent: true as const };
 }
