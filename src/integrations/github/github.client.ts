@@ -26,6 +26,13 @@ type GithubPull = {
   created_at: string;
   updated_at: string;
   user: { login: string } | null;
+  base?: { ref: string };
+  head?: { ref: string };
+};
+
+type GithubBranch = {
+  name: string;
+  protected?: boolean;
 };
 
 async function githubFetch<T>(path: string, token: string, init?: RequestInit): Promise<T> {
@@ -106,11 +113,17 @@ export async function listGithubRepos(token: string) {
   return repos;
 }
 
-export async function listGithubPullRequests(token: string, owner: string, repo: string) {
+export async function listGithubPullRequests(
+  token: string,
+  owner: string,
+  repo: string,
+  opts?: { base?: string | null },
+) {
   const pulls: GithubPull[] = [];
+  const baseQ = opts?.base ? `&base=${encodeURIComponent(opts.base)}` : "";
   for (let page = 1; page <= 5; page += 1) {
     const batch = await githubFetch<GithubPull[]>(
-      `/repos/${owner}/${repo}/pulls?state=all&per_page=50&page=${page}&sort=updated&direction=desc`,
+      `/repos/${owner}/${repo}/pulls?state=all&per_page=50&page=${page}&sort=updated&direction=desc${baseQ}`,
       token,
     );
     pulls.push(...batch);
@@ -133,12 +146,31 @@ type GithubWorkflowRun = {
   updated_at: string;
 };
 
-export async function listGithubWorkflowRuns(token: string, owner: string, repo: string) {
+export async function listGithubWorkflowRuns(
+  token: string,
+  owner: string,
+  repo: string,
+  branch?: string | null,
+) {
+  const branchQuery = branch ? `&branch=${encodeURIComponent(branch)}` : "";
   const data = await githubFetch<{ workflow_runs: GithubWorkflowRun[] }>(
-    `/repos/${owner}/${repo}/actions/runs?per_page=30`,
+    `/repos/${owner}/${repo}/actions/runs?per_page=30${branchQuery}`,
     token,
   );
   return data.workflow_runs ?? [];
 }
 
-export type { GithubPull, GithubRepo, GithubWorkflowRun };
+export async function listGithubBranches(token: string, owner: string, repo: string) {
+  const branches: GithubBranch[] = [];
+  for (let page = 1; page <= 10; page += 1) {
+    const batch = await githubFetch<GithubBranch[]>(
+      `/repos/${owner}/${repo}/branches?per_page=100&page=${page}`,
+      token,
+    );
+    branches.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return branches;
+}
+
+export type { GithubPull, GithubRepo, GithubWorkflowRun, GithubBranch };

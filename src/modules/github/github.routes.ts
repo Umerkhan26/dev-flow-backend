@@ -12,6 +12,7 @@ import {
   assertGithubConfigured,
   exchangeGithubCode,
   fetchGithubUser,
+  listGithubBranches,
   listGithubRepos,
 } from "../../integrations/github/github.client.js";
 import { queueRepositorySync, syncRepositoryPullRequests } from "../../integrations/github/github.sync.js";
@@ -250,6 +251,8 @@ githubRouter.get(
           description: r.description,
           private: r.private,
           htmlUrl: r.htmlUrl,
+          defaultBranch: r.defaultBranch,
+          syncBaseBranch: r.syncBaseBranch,
           syncStatus: r.syncStatus,
           lastSyncedAt: r.lastSyncedAt,
           lastSyncError: r.lastSyncError,
@@ -336,6 +339,12 @@ githubRouter.post(
   requireAuth,
   async (req, res, next) => {
     try {
+      const body = z
+        .object({
+          baseBranch: z.union([z.string().min(1).max(255), z.literal(""), z.null()]).optional(),
+        })
+        .parse(req.body ?? {});
+
       const repository = await prisma.repository.findUnique({
         where: { id: req.params.repositoryId },
       });
@@ -350,7 +359,9 @@ githubRouter.post(
         throw new AppError("Forbidden", 403, "FORBIDDEN");
       }
 
-      const result = await syncRepositoryPullRequests(repository.id);
+      const result = await syncRepositoryPullRequests(repository.id, {
+        baseBranch: body.baseBranch,
+      });
       await writeAuditLog({
         action: "github.repo_synced",
         actorId: req.user!.id,
@@ -362,6 +373,43 @@ githubRouter.post(
         },
       });
       res.json({ ok: true, ...result });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+githubRouter.get(
+  "/repositories/:repositoryId/branches",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const repository = await prisma.repository.findUnique({
+        where: { id: req.params.repositoryId },
+        include: { connection: true },
+      });
+      if (!repository) throw new NotFoundError("Repository not found");
+
+      const membership = await prisma.workspaceMember.findUnique({
+        where: {
+          workspaceId_userId: { workspaceId: repository.workspaceId, userId: req.user!.id },
+        },
+      });
+      if (!membership) throw new AppError("Forbidden", 403, "FORBIDDEN");
+
+      const token = decryptSecret(repository.connection.accessTokenEnc);
+      const branches = await listGithubBranches(token, repository.owner, repository.name);
+      const names = branches.map((b) => b.name);
+      const preferred = repository.syncBaseBranch || repository.defaultBranch;
+      if (preferred && !names.includes(preferred)) {
+        names.unshift(preferred);
+      }
+
+      res.json({
+        defaultBranch: repository.defaultBranch,
+        syncBaseBranch: repository.syncBaseBranch,
+        branches: names,
+      });
     } catch (error) {
       next(error);
     }

@@ -13,21 +13,63 @@ function mapPrState(pr: GithubPull) {
   return "OPEN" as const;
 }
 
-export async function syncRepositoryPullRequests(repositoryId: string) {
+export type SyncOptions = {
+  /** Base branch PRs must target. Null/empty = all base branches. */
+  baseBranch?: string | null;
+  /** Skip workspace notifications (e.g. background link sync). */
+  silent?: boolean;
+};
+
+function topBaseBranches(pulls: GithubPull[], limit = 5) {
+  const counts = new Map<string, number>();
+  for (const pr of pulls) {
+    const ref = pr.base?.ref?.trim();
+    if (!ref) continue;
+    counts.set(ref, (counts.get(ref) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([name, count]) => ({ name, count }));
+}
+
+export async function syncRepositoryPullRequests(
+  repositoryId: string,
+  options: SyncOptions = {},
+) {
   const repository = await prisma.repository.findUnique({
     where: { id: repositoryId },
     include: { connection: true },
   });
   if (!repository) throw new Error("Repository not found");
 
+  const baseBranch =
+    options.baseBranch !== undefined
+      ? options.baseBranch?.trim() || null
+      : repository.syncBaseBranch;
+
   await prisma.repository.update({
     where: { id: repositoryId },
-    data: { syncStatus: "SYNCING", lastSyncError: null },
+    data: {
+      syncStatus: "SYNCING",
+      lastSyncError: null,
+      ...(options.baseBranch !== undefined ? { syncBaseBranch: baseBranch } : {}),
+    },
   });
 
   try {
     const token = decryptSecret(repository.connection.accessTokenEnc);
-    const pulls = await listGithubPullRequests(token, repository.owner, repository.name);
+
+    // Sample without base filter so we can hint which bases actually exist
+    const sampleForHints = baseBranch
+      ? await listGithubPullRequests(token, repository.owner, repository.name)
+      : [];
+
+    const pulls = await listGithubPullRequests(token, repository.owner, repository.name, {
+      base: baseBranch,
+    });
+    const scanned = baseBranch ? sampleForHints.length : pulls.length;
+    const commonBases = topBaseBranches(baseBranch ? sampleForHints : pulls);
 
     for (const pr of pulls) {
       await prisma.pullRequest.upsert({
@@ -64,6 +106,7 @@ export async function syncRepositoryPullRequests(repositoryId: string) {
       });
     }
 
+    // Actions "branch" filter is the run's head branch, not PR base — always fetch recent runs.
     let workflowSynced = 0;
     let failedRuns = 0;
     try {
@@ -120,15 +163,21 @@ export async function syncRepositoryPullRequests(repositoryId: string) {
       },
     });
 
-    void notifyWorkspaceMembers({
-      workspaceId: repository.workspaceId,
-      type: "REPO_SYNCED",
-      title: `Synced ${repository.fullName}`,
-      body: `${pulls.length} PR(s), ${workflowSynced} workflow run(s)`,
-      link: "/app/repositories",
-    });
+    const hasActivity = pulls.length > 0 || workflowSynced > 0;
+    if (!options.silent && hasActivity) {
+      const branchNote = baseBranch ? ` → ${baseBranch}` : "";
+      void notifyWorkspaceMembers({
+        workspaceId: repository.workspaceId,
+        type: "REPO_SYNCED",
+        title: `Synced ${repository.fullName}${branchNote}`,
+        body: `${pulls.length} pull request${pulls.length === 1 ? "" : "s"} · ${workflowSynced} Actions run${
+          workflowSynced === 1 ? "" : "s"
+        }`,
+        link: "/app/pull-requests",
+      });
+    }
 
-    if (failedRuns > 0) {
+    if (!options.silent && failedRuns > 0) {
       void notifyWorkspaceMembers({
         workspaceId: repository.workspaceId,
         type: "WORKFLOW_FAILED",
@@ -138,7 +187,15 @@ export async function syncRepositoryPullRequests(repositoryId: string) {
       });
     }
 
-    return { synced: pulls.length, workflowRuns: workflowSynced, failedRuns };
+    return {
+      synced: pulls.length,
+      workflowRuns: workflowSynced,
+      failedRuns,
+      baseBranch: baseBranch ?? null,
+      scanned,
+      commonBases,
+      notified: !options.silent && hasActivity,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Sync failed";
     await prisma.repository.update({
@@ -149,9 +206,9 @@ export async function syncRepositoryPullRequests(repositoryId: string) {
   }
 }
 
-export function queueRepositorySync(repositoryId: string) {
+export function queueRepositorySync(repositoryId: string, options?: SyncOptions) {
   setImmediate(() => {
-    void syncRepositoryPullRequests(repositoryId).catch((err) => {
+    void syncRepositoryPullRequests(repositoryId, { ...options, silent: true }).catch((err) => {
       console.error("Repository sync failed", repositoryId, err);
     });
   });

@@ -257,6 +257,7 @@ model Repository {
   private        Boolean       @default(false)
   defaultBranch  String?       @map("default_branch")
   htmlUrl        String        @map("html_url")
+  syncBaseBranch String?       @map("sync_base_branch")
   syncStatus     RepoSyncStatus @default(IDLE) @map("sync_status")
   lastSyncedAt   DateTime?     @map("last_synced_at")
   lastSyncError  String?       @map("last_sync_error") @db.Text
